@@ -1,0 +1,6 @@
+.DS_Store
+.vscode
+*.a
+build/
+cfenc.xcodeproj/
+src/version.h
