@@ -904,7 +904,7 @@ bool CFHD_Transcoder::write_cfhd_sample()
         {
             av_log(nullptr, AV_LOG_ERROR,
                    "write_cfhd_sample: av_write_frame failed:\n%s\n", av_err2str(ret));
-            throw 4;
+            return false;
         }
         if (input->nb_frames > 0)
             av_log(nullptr, AV_LOG_INFO,

@@ -53,9 +53,11 @@ It uses the multithreaded Cineform encoder.  I've tested it with many formats an
 
 THE BAD
 
-There is room for improvement (understatement) with threading and performance and my immediate plans are to work on that.  It's still better than running Windows software under wine.
+The program does not support alpha channels, interlaced content, Bayer pixel formats, or 3D, which are all available with the Cineform SDK.  They could be added without too much fuss.  I just personally don't need them.
 
-The program does not support alpha channels, interlaced content, or Bayer pixel formats.  However, they could all be added without too much fuss.  I just personally don't need them.
+I did my best with optimizing performance.  For better or worse, encoding to DNxHR with FFmpeg (with similar settings) is consistently about 33% faster.  Also converting YUV to RGB with Vapoursynth and then feeding to cfenc is 2x faster than using cfenc to convert to RGB.  I tried a number of things that I had high hopes would help, but they helped only very slightly and so I did not bother merging those changes.  The git branches contain those efforts.  My recommendation is to stick with the master branch.
+
+I have spent as much time on it as I am willing to spend for now.
 
 THE UGLY
 
