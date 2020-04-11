@@ -16,6 +16,10 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+// THREADING TO-DOS
+// Can scaling be threaded with avfilter?
+// Can we create a separate thread for reading/writing cfhd samples?
+
 #include "version.h"
 #include <unistd.h>
 #include <getopt.h>
@@ -27,8 +31,12 @@ extern "C"
 {
     #include <libavcodec/avcodec.h>
     #include <libavformat/avformat.h>
+    #include <libavfilter/avfilter.h>
+    #include <libavfilter/buffersrc.h>
+    #include <libavfilter/buffersink.h>
     #include <libswscale/swscale.h>
     #include <libavutil/pixdesc.h>
+    #include <libavutil/opt.h>
 }
 
 #include <cineformsdk/CFHDEncoder.h>
@@ -604,6 +612,8 @@ struct CFHD_Transcoder
     AVCodecContext *dec_ctx;
     AVStream *input;
     CFHD_Encoder *cfhd;
+    AVFilterContext *buffersink_ctx;
+    AVFilterContext *buffersrc_ctx;
     SwsContext *sws_ctx;
     AVCodecContext *v210_ctx;
     AVPacket *in_pkt;
@@ -661,6 +671,7 @@ private:
     bool encode();
     bool transcode();
     bool transcode_packet();
+    bool init_filter(AVPixelFormat, bool, int);
     bool init_scaler(AVPixelFormat, bool, int);
     bool init_v210_encoder();
     bool encode_v210();
@@ -985,6 +996,90 @@ bool CFHD_Transcoder::encode_v210()
 }
 
 
+bool CFHD_Transcoder::init_filter(AVPixelFormat new_pix_fmt, bool accurate, int trc)
+{
+    char args[512];
+    int ret = 0;
+    AVFilterGraph *filter_graph;
+    const AVFilter *buffersrc  = avfilter_get_by_name("buffer");
+    const AVFilter *buffersink = avfilter_get_by_name("buffersink");
+    AVFilterInOut *outputs = avfilter_inout_alloc();
+    AVFilterInOut *inputs  = avfilter_inout_alloc();
+    enum AVPixelFormat pix_fmts[] = { new_pix_fmt, AV_PIX_FMT_NONE };
+    
+    char filter_desc[] = "scale=flags=accurate_rnd+full_chroma_int";
+
+    filter_graph = avfilter_graph_alloc();
+    if (!outputs || !inputs || !filter_graph) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    /* buffer video source: the decoded frames from the decoder will be inserted here. */
+    snprintf(args, sizeof(args),
+            "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
+            g_width, g_height, dec_ctx->pix_fmt,
+            input->time_base.num, input->time_base.den,
+            dec_ctx->sample_aspect_ratio.num, dec_ctx->sample_aspect_ratio.den);
+    ret = avfilter_graph_create_filter(&buffersrc_ctx, buffersrc, "in",
+                                       args, NULL, filter_graph);
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_ERROR, "Cannot create buffer source\n");
+        goto end;
+    }
+    /* buffer video sink: to terminate the filter chain. */
+    ret = avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out",
+                                       NULL, NULL, filter_graph);
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_ERROR, "Cannot create buffer sink\n");
+        goto end;
+    }
+    ret = av_opt_set_int_list(buffersink_ctx, "pix_fmts", pix_fmts,
+                              AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_ERROR, "Cannot set output pixel format\n");
+        goto end;
+    }
+    /*
+     * Set the endpoints for the filter graph. The filter_graph will
+     * be linked to the graph described by filters_descr.
+     */
+    /*
+     * The buffer source output must be connected to the input pad of
+     * the first filter described by filters_descr; since the first
+     * filter input label is not specified, it is set to "in" by
+     * default.
+     */
+    outputs->name       = av_strdup("in");
+    outputs->filter_ctx = buffersrc_ctx;
+    outputs->pad_idx    = 0;
+    outputs->next       = NULL;
+    /*
+     * The buffer sink input must be connected to the output pad of
+     * the last filter described by filters_descr; since the last
+     * filter output label is not specified, it is set to "out" by
+     * default.
+     */
+    inputs->name       = av_strdup("out");
+    inputs->filter_ctx = buffersink_ctx;
+    inputs->pad_idx    = 0;
+    inputs->next       = NULL;
+    if ((ret = avfilter_graph_parse_ptr(filter_graph, filter_desc, &inputs, &outputs, NULL)) < 0)
+        goto end;
+    if ((ret = avfilter_graph_config(filter_graph, NULL)) < 0)
+        goto end;
+
+//    avfilter_graph_free(&filter_graph);
+    avfilter_inout_free(&inputs);
+    avfilter_inout_free(&outputs);
+    return true;
+end:
+    avfilter_graph_free(&filter_graph);
+    avfilter_inout_free(&inputs);
+    avfilter_inout_free(&outputs);
+    return false;
+}
+
+
 bool CFHD_Transcoder::init_scaler(AVPixelFormat new_pix_fmt, bool accurate, int trc)
 {
     AVColorSpace colorspace;
@@ -1046,17 +1141,39 @@ bool CFHD_Transcoder::transcode_packet()
             return false;
         }
 
-        if (sws_ctx)
+        // TODO:  swap this out for filter
+        /* push the decoded frame into the filtergraph */
+        if (buffersrc_ctx)
         {
-            if ((ret = sws_scale(sws_ctx, in_frame->data, in_frame->linesize, 0, g_height,
-                                 out_frame->data, out_frame->linesize)) <= 0)
+            if (av_buffersrc_add_frame_flags(buffersrc_ctx, in_frame, AV_BUFFERSRC_FLAG_KEEP_REF) < 0)
+            {
+                av_log(NULL, AV_LOG_ERROR, "Error while feeding the filtergraph\n");
+                return false;
+            }
+
+            ret = av_buffersink_get_frame(buffersink_ctx, out_frame);
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                return true;
+            if (ret < 0)
             {
                 av_log(nullptr, AV_LOG_ERROR,
-                       "transcode_packet: sws_scale failed:\n%s\n", av_err2str(ret));
+                       "transcode_packet: av_buffersink_get_frame failed:\n%s\n", av_err2str(ret));
                 return false;
             }
         }
         else av_frame_ref(out_frame, in_frame);
+
+//        if (sws_ctx)
+//        {
+//            if ((ret = sws_scale(sws_ctx, in_frame->data, in_frame->linesize, 0, g_height,
+//                                 out_frame->data, out_frame->linesize)) <= 0)
+//            {
+//                av_log(nullptr, AV_LOG_ERROR,
+//                       "transcode_packet: sws_scale failed:\n%s\n", av_err2str(ret));
+//                return false;
+//            }
+//        }
+//        else av_frame_ref(out_frame, in_frame);
 
         if (v210_ctx)
         {
@@ -1208,7 +1325,7 @@ void CFHD_Transcoder::process(CliOptions *cliopt)
             bool accurate = false;
             if (input_is_rgb != cliopt->b_rgb)
                 accurate = true;
-            if (! init_scaler(new_pix_fmt, accurate, cliopt->trc))
+            if (! init_filter(new_pix_fmt, accurate, cliopt->trc))
                 throw 4;
         }
 
