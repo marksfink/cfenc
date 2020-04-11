@@ -20,8 +20,7 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <regex>
-#include <chrono>
-#include <thread>
+#include <future>
 
 extern "C"
 {
@@ -390,7 +389,7 @@ struct CFHD_Encoder
         if (threads > 0) this->threads = threads;
         else
         {
-            this->threads = std::thread::hardware_concurrency() - 1;
+            this->threads = std::thread::hardware_concurrency() - 2;
             if (this->threads <= 0) this->threads = 1;
         }
         queue_size = (int)round((float)this->threads * 1.5);
@@ -568,8 +567,8 @@ bool CFHD_Encoder::push(uint8_t *data, int pitch, int frame_num, int64_t pts, in
             queued++;
             return true;
         }
-        else if (! pop())
-            return false;
+        av_log(nullptr, AV_LOG_INFO,
+               "CFHD_Encoder::push: queue full");
     }
 }
 
@@ -591,8 +590,10 @@ bool CFHD_Encoder::pop()
         sample.pts = queue[i].pts;
         sample.duration = queue[i].duration;
         queued--;
+        if (queued == 0)
+            av_log(nullptr, AV_LOG_INFO,
+                   "CFHD_Encoder::pop: queue empty");
     }
-    else usleep(10000);
     return true;
 }
 
@@ -664,6 +665,7 @@ private:
     bool init_scaler(AVPixelFormat, bool, int);
     bool init_v210_encoder();
     bool encode_v210();
+    void read_cfhd_sample(std::future<void>);
     bool write_cfhd_sample();
 };
 
@@ -885,39 +887,52 @@ bool CFHD_Transcoder::write_cfhd_sample()
 {
     int ret;
 
-    if (cfhd->sample.size > 0)
+    out_pkt->data = cfhd->sample.data;
+    out_pkt->size = (int)cfhd->sample.size;
+    out_pkt->flags |= AV_PKT_FLAG_KEY;
+    out_pkt->duration = cfhd->sample.duration;
+    out_pkt->pts = out_pkt->dts = cfhd->sample.pts;
+
+    if (b_video_only)
+        out_pkt->stream_index = 0;
+    else
+        out_pkt->stream_index = input->index;
+    AVStream *output = ofmt_ctx->streams[out_pkt->stream_index];
+    av_packet_rescale_ts(out_pkt, input->time_base, output->time_base);
+
+    if ((ret = av_write_frame(ofmt_ctx, out_pkt)) < 0)
     {
-        out_pkt->data = cfhd->sample.data;
-        out_pkt->size = (int)cfhd->sample.size;
-        out_pkt->flags |= AV_PKT_FLAG_KEY;
-        out_pkt->duration = cfhd->sample.duration;
-        out_pkt->pts = out_pkt->dts = cfhd->sample.pts;
-
-        if (b_video_only)
-            out_pkt->stream_index = 0;
-        else
-            out_pkt->stream_index = input->index;
-        AVStream *output = ofmt_ctx->streams[out_pkt->stream_index];
-        av_packet_rescale_ts(out_pkt, input->time_base, output->time_base);
-
-        if ((ret = av_write_frame(ofmt_ctx, out_pkt)) < 0)
-        {
-            av_log(nullptr, AV_LOG_ERROR,
-                   "write_cfhd_sample: av_write_frame failed:\n%s\n", av_err2str(ret));
-            throw 4;
-        }
-        if (input->nb_frames > 0)
-            av_log(nullptr, AV_LOG_INFO,
-                   "           Frame: %u / %lld\r", cfhd->sample.frame_num, input->nb_frames);
-        else
-            av_log(nullptr, AV_LOG_INFO,
-                   "           Frame: %u\r", cfhd->sample.frame_num);
-
-        cfhd->sample.data = nullptr;
-        cfhd->sample.size = 0;
-        CFHD_ReleaseSampleBuffer(cfhd->pool, cfhd->sample.buffer);
+        av_log(nullptr, AV_LOG_ERROR,
+               "write_cfhd_sample: av_write_frame failed:\n%s\n", av_err2str(ret));
+        return false;
     }
+    if (input->nb_frames > 0)
+        av_log(nullptr, AV_LOG_INFO,
+               "           Frame: %u / %lld\r", cfhd->sample.frame_num, input->nb_frames);
+    else
+        av_log(nullptr, AV_LOG_INFO,
+               "           Frame: %u\r", cfhd->sample.frame_num);
+
+    cfhd->sample.data = nullptr;
+    cfhd->sample.size = 0;
+    CFHD_ReleaseSampleBuffer(cfhd->pool, cfhd->sample.buffer);
     return true;
+}
+
+
+void CFHD_Transcoder::read_cfhd_sample(std::future<void> done_processing)
+{
+    while (done_processing.wait_for(std::chrono::milliseconds(1)) == std::future_status::timeout)
+    {
+        if (! cfhd->pop())
+            throw 5;
+        if (cfhd->sample.size > 0)
+        {
+            if (! write_cfhd_sample())
+                throw 5;
+        }
+        else usleep(10000);
+    }
 }
 
 
@@ -1067,8 +1082,8 @@ bool CFHD_Transcoder::transcode_packet()
                               in_frame->pts, in_frame->pkt_duration))
                 return false;
 
-        if (! write_cfhd_sample())
-            return false;
+//        if (! write_cfhd_sample())
+//            return false;
 
         if (! sws_ctx) av_frame_unref(out_frame);
         av_frame_unref(in_frame);
@@ -1080,8 +1095,12 @@ bool CFHD_Transcoder::transcode_packet()
 bool CFHD_Transcoder::transcode()
 {
     int ret;
-
     av_log(nullptr, AV_LOG_DEBUG, "Decoding/scaling video then sending to the cfhd encoder.\n");
+
+    std::promise<void> stop_writing;
+    std::future<void> done_processing = stop_writing.get_future();
+    std::thread write_thread(&CFHD_Transcoder::read_cfhd_sample, this, std::move(done_processing));
+
     while (1)
     {
         if (av_read_frame(ifmt_ctx, in_pkt) < 0)
@@ -1107,6 +1126,10 @@ bool CFHD_Transcoder::transcode()
     av_packet_free(&in_pkt);
     if (! transcode_packet())
         return false;
+    
+    stop_writing.set_value();
+    write_thread.join();
+
     return true;
 }
 
@@ -1218,8 +1241,16 @@ void CFHD_Transcoder::process(CliOptions *cliopt)
 
     // flush the encoder
     while (cfhd->queued)
-        if (! (cfhd->pop() && write_cfhd_sample()))
-            throw 4;
+    {
+        if (! cfhd->pop())
+            throw 5;
+        if (cfhd->sample.size > 0)
+        {
+            if (! write_cfhd_sample())
+                throw 5;
+        }
+        else usleep(10000);
+    }
 
     av_log(nullptr, AV_LOG_INFO, "\n");
     if ((ret = av_write_trailer(ofmt_ctx)) < 0)
