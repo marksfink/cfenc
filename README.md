@@ -55,15 +55,13 @@ THE BAD
 
 The program does not support alpha channels, interlaced content, Bayer pixel formats, or 3D, which are all available with the Cineform SDK.  They could be added without too much fuss.  I just personally don't need them.
 
-I did my best with optimizing performance.  For better or worse, encoding to DNxHR with FFmpeg (with similar settings) is consistently about 33% faster.  Also converting YUV to RGB with Vapoursynth and then feeding to cfenc is 2x faster than using cfenc to convert to RGB.  I tried a number of things that I had high hopes would help, but they helped only very slightly and so I did not bother merging those changes.  The git branches contain those efforts.  My recommendation is to stick with the master branch.
-
-I have spent as much time on it as I am willing to spend for now.
+I did my best with optimizing performance.  Feeding raw video from Vapoursynth is always much faster (by 2x or more) than transcoding with cfenc alone.  Also transcoding with FFmpeg to say DNxHR is about 33% faster on my Macbook.  So I am sure cfenc could be improved; I just haven't figure out how and I've put as much time into it as I am willing to.  In any case, I followed the FFmpeg API examples.  My best guess is that FFmpeg has performance enhancements not shown in the API examples and not otherwise documented.
 
 THE UGLY
 
 It is tested against and works with the FFmpeg 4.x API.  It does not work with FFmpeg 3.x.  I started down the road of supporting 3.x, but ran into issues that were taking too much of my time and I stopped.  Happy for someone to contribute that work if they care enough to.
 
-Windows is not supported and won't be unless someone else contributes that work.  Cineform encoding on Windows is not really an issue anyway.  The glaring gap is on Linux.
+I have no plans to provide a build process for Windows; however folks on Doom9 have graciously helped out on that.  You will find a Windows build under Releases.
 
 <br/>
 
