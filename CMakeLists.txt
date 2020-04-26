@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(cfenc VERSION 0.1)
+project(cfenc VERSION 0.2)
 
 set(PROJECT_SOURCE_DIR ${PROJECT_SOURCE_DIR}/src)
 set(CMAKE_CXX_STANDARD 11)

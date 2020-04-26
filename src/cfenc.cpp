@@ -356,16 +356,22 @@ struct CFHD_Encoder
     // queue is necessary to avoid a data race condition with the read/decode thread(s)
     std::vector<CFHD_AVData> queue;
 
-    CFHD_Encoder(bool input_is_8_bit, int rgb, std::string quality, int trc, int threads)
+    CFHD_Encoder(bool input_is_8_bit, bool alpha_channel, int rgb,
+                 std::string quality, int trc, int threads)
     {
         this->quality = set_quality(quality);
         flags = CFHD_ENCODING_FLAGS_NONE;
         queued = 0;
 
-        if (rgb)
+        // We scale everything to 16-bit RGB because it simplifies things for us and because
+        // Cineform does that anyway so we're not wasting cycles.
+        if (alpha_channel)
         {
-            // We scale everything to RGB48 because it simplifies things for us and because
-            // Cineform does that anyway so we're not wasting cycles.
+            pix_fmt = CFHD_PIXEL_FORMAT_RG64;
+            enc_fmt = CFHD_ENCODED_FORMAT_RGBA_4444;
+        }
+        else if (rgb)
+        {
             pix_fmt = CFHD_PIXEL_FORMAT_RG48;
             enc_fmt = CFHD_ENCODED_FORMAT_RGB_444;
         }
@@ -740,6 +746,8 @@ void CFHD_Transcoder::open_input(CliOptions *cliopt)
     // Check if the video is already in a format that we can send direct to the cfhd encoder.
     if (input->codecpar->codec_id == AV_CODEC_ID_RAWVIDEO)
     {
+        if ((AVPixelFormat)input->codecpar->format == AV_PIX_FMT_RGBA64LE)
+            return;
         if (cliopt->b_rgb)
         {
             if ((AVPixelFormat)input->codecpar->format == AV_PIX_FMT_RGB48LE)
@@ -787,7 +795,7 @@ void CFHD_Transcoder::open_output(CliOptions *cliopt)
     int i, ret;
     AVStream *ist, *ost;
     AVDictionaryEntry *tag = nullptr;
-    
+
     if ((ret = avformat_alloc_output_context2(&ofmt_ctx, nullptr, nullptr, cliopt->output)) < 0)
     {
         av_log(nullptr, AV_LOG_ERROR,
@@ -830,9 +838,17 @@ void CFHD_Transcoder::open_output(CliOptions *cliopt)
 
         if (ist == input)
         {
+            const AVPixFmtDescriptor *input_desc;
+            input_desc = av_pix_fmt_desc_get((AVPixelFormat)ist->codecpar->format);
+
             ost->codecpar->codec_id = AV_CODEC_ID_CFHD;
             ost->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
-            if (cliopt->b_rgb) ost->codecpar->format = AV_PIX_FMT_GBRP12LE;
+            if (input_desc->flags & AV_PIX_FMT_FLAG_ALPHA)
+            {
+                ost->codecpar->format = AV_PIX_FMT_GBRAP12LE;
+                cliopt->b_rgb = true;
+            }
+            else if (cliopt->b_rgb) ost->codecpar->format = AV_PIX_FMT_GBRP12LE;
             else ost->codecpar->format = AV_PIX_FMT_YUV422P10LE;
             ost->codecpar->width = g_width;
             ost->codecpar->height = g_height;
@@ -1152,14 +1168,17 @@ void CFHD_Transcoder::process(CliOptions *cliopt)
     const AVPixFmtDescriptor *input_desc;
     bool input_is_8_bit = false;
     bool input_is_rgb = false;
+    bool alpha_channel = false;
 
     input_desc = av_pix_fmt_desc_get((AVPixelFormat)input->codecpar->format);
     if (input_desc->comp[0].depth == 8)
         input_is_8_bit = true;
     if (input_desc->flags & AV_PIX_FMT_FLAG_RGB)
         input_is_rgb = true;
-    
-    cfhd = new CFHD_Encoder(input_is_8_bit, cliopt->b_rgb, cliopt->quality,
+    if (input_desc->flags & AV_PIX_FMT_FLAG_ALPHA)
+        alpha_channel = true;
+
+    cfhd = new CFHD_Encoder(input_is_8_bit, alpha_channel, cliopt->b_rgb, cliopt->quality,
                             cliopt->trc, cliopt->threads);
     if (! cfhd->start())
         throw 4;
@@ -1181,7 +1200,9 @@ void CFHD_Transcoder::process(CliOptions *cliopt)
             throw 4;
         }
 
-        if (cliopt->b_rgb)
+        if (alpha_channel)
+            new_pix_fmt = AV_PIX_FMT_RGBA64LE;
+        else if (cliopt->b_rgb)
             new_pix_fmt = AV_PIX_FMT_RGB48LE;
         else if (input_is_8_bit)
             new_pix_fmt = AV_PIX_FMT_YUYV422;
@@ -1206,7 +1227,7 @@ void CFHD_Transcoder::process(CliOptions *cliopt)
             }
             // test if we are converting YUV->RGB or RGB->YUV, set scaler flags accordingly
             bool accurate = false;
-            if (input_is_rgb != cliopt->b_rgb)
+            if (input_is_rgb != cliopt->b_rgb || input_is_rgb != alpha_channel)
                 accurate = true;
             if (! init_scaler(new_pix_fmt, accurate, cliopt->trc))
                 throw 4;

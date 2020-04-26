@@ -41,6 +41,8 @@ It will convert YUV to RGB and vice versa if you ask it to (input is one and out
 
 It does not perform any other scaling, filtering or conversion of any kind on the video.  It keeps the same dimensions and frame rate.  If you want to perform additional scaling/filtering/conversions on the video, then use FFmpeg or Vapoursynth (or whatever you like) to do it, then feed it into cfenc.  Cfenc's purpose in life is to encode Cineform and provide just enough convenience features beyond that.
 
+If the input video includes an alpha channel, then cfenc will encode to RGBA_4444 even if you do not use the -rgb argument.  This is because the Cineform SDK supports alpha channels with RGB only.  And we assume if the input video has an alpha channel then you want the output to have the same.
+
 One key use-case (for me anyhow) is to process video with Vapoursynth and send to cfenc for encoding, so vspipe works fine with cfenc.  However you also need to use the -s, -r, and -p options (see above).  Or you could use Yuv4Mpeg.  If you use -s, -r, and -p, then two things:
 - the program assumes it is receiving raw video (so don't use those arguments unless the input is raw video -- you'll just get garbage output otherwise)
 - you must use all three arguments (or the program tells you to use all three and stops)
@@ -53,7 +55,7 @@ It uses the multithreaded Cineform encoder.  I've tested it with many formats an
 
 THE BAD
 
-The program does not support alpha channels, interlaced content, Bayer pixel formats, or 3D, which are all available with the Cineform SDK.  They could be added without too much fuss.  I just personally don't need them.
+The program does not support interlaced content, Bayer pixel formats, or 3D, which are all available with the Cineform SDK.  They could be added without too much fuss.  I just personally don't need them.
 
 I did my best with optimizing performance.  Feeding raw video from Vapoursynth is always much faster (by 2x or more) than transcoding with cfenc alone.  Also transcoding with FFmpeg to say DNxHR is about 33% faster on my Macbook.  So I am sure cfenc could be improved; I just haven't figure out how and I've put as much time into it as I am willing to.  In any case, I followed the FFmpeg API examples.  My best guess is that FFmpeg has performance enhancements not shown in the API examples and not otherwise documented.
 
