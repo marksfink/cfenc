@@ -8,7 +8,7 @@ usage: cfenc [options] -i <infile> <outfile>
                         - low, medium, high, fs1, fs2, fs3
 -rgb                   Encode RGB instead of YUV.  YUV is the default.
 -c, -trc <int>         Force transfer characteristics [auto]
-                        - 601 or 709
+                        - 601, 709, or 2020
 -t, -threads <int>     Number of threads to use for encoding [auto]
 -l, -loglevel <string> Output verbosity [info]
                         - quiet, info, debug

@@ -74,7 +74,7 @@ static void show_usage(void)
     "                            - low, medium, high, fs1, fs2, fs3\n"
     "-rgb                   Encode RGB instead of YUV.  YUV is the default.\n"
     "-c, -trc <int>         Force transfer characteristics [auto]\n"
-    "                            - 601 or 709\n"
+    "                            - 601, 709, or 2020\n"
     "-t, -threads <int>     Number of threads to use for encoding [auto]\n"
     "-l, -loglevel <string> Output verbosity [info]\n"
     "                            - quiet, info, debug\n"
@@ -171,7 +171,7 @@ void CliOptions::parse(int argc, char **argv)
                 break;
             case 'c':
                 trc = atoi(optarg);
-                if (trc != 601 && trc != 709)
+                if (trc != 601 && trc != 709 && trc != 2020)
                 {
                     av_log(nullptr, AV_LOG_ERROR, "Invalid trc setting.\n");
                     b_show_help = true;
@@ -265,6 +265,7 @@ void CliOptions::parse(int argc, char **argv)
             }
             case 'i':
                 input = optarg;
+                if (strcmp(input, "-") == 0) input = "pipe:";
                 break;
             case 'h':
                 b_show_help = true;
@@ -1012,11 +1013,16 @@ bool CFHD_Transcoder::init_scaler(AVPixelFormat new_pix_fmt, bool accurate, int 
         case 709:
             colorspace = AVCOL_SPC_BT709;
             break;
+        case 2020:
+            colorspace = AVCOL_SPC_BT2020_NCL;
+            break;
         default:
             if (g_width <= 720)
                 colorspace = AVCOL_SPC_BT470BG;
-            else
+            else if (g_width <= 1920)
                 colorspace = AVCOL_SPC_BT709;
+            else
+                colorspace = AVCOL_SPC_BT2020_NCL;
     }
     table = sws_getCoefficients(colorspace);
     sws_setColorspaceDetails(sws_ctx, table, 0, table, 0, 0, 65535, 65535);
