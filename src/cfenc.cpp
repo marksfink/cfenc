@@ -739,6 +739,9 @@ void CFHD_Transcoder::open_input(CliOptions *cliopt)
     av_dump_format(ifmt_ctx, 0, cliopt->input, 0);
 
     // Check if the video is already in a format that we can send direct to the cfhd encoder.
+    if (input->codecpar->codec_id == AV_CODEC_ID_V210)
+        return;
+
     if (input->codecpar->codec_id == AV_CODEC_ID_RAWVIDEO)
     {
         if (cliopt->b_rgb)
